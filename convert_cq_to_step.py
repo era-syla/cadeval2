@@ -21,7 +21,7 @@ def execute_cadquery_to_step(py_file, output_step):
 
         # Find result variable
         result_var = 'result'
-        for var in ['result', 'model', 'cad', 'part', 'shape', 'assembly']:
+        for var in ['result', 'solid', 'model', 'cad', 'part', 'shape', 'assembly', 'obj', 'body']:
             if f'{var} =' in content or f'{var}=' in content:
                 result_var = var
                 break
