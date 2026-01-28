@@ -1,4 +1,4 @@
-from GVis.RenderTools.blender_utils import gray_cad_image, multicolor_cad_image
+from GVis.RenderTools.blender_utils import gray_cad_image, multicolor_cad_image, grayscale_224_cad_image
 import argparse
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -107,6 +107,13 @@ def main():
     )
 
     parser.add_argument(
+        '--grayscale_224',
+        action='store_true',
+        default=False,
+        help='Generate 224x224 grayscale PNG images (for training data)'
+    )
+
+    parser.add_argument(
         '--data_path',
         type=str,
         required = True,
@@ -143,6 +150,13 @@ def main():
             data_list,
             num_workers=args.num_workers
         )
-    
+
+    if args.grayscale_224:
+        run_metric_parallel(
+            grayscale_224_cad_image,
+            data_list,
+            num_workers=args.num_workers
+        )
+
 if __name__ == "__main__":
     main()

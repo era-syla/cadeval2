@@ -712,6 +712,73 @@ def gray_cad_image(cad_file, save_dir='dataset_results/images/gray_cad'):
         # print(f"Compound image saved as {save_dir}/{base_filename}_compound.png with dimensions: {compound.size}")
         return cad_file, save_compound
 
+def grayscale_224_cad_image(cad_file, save_path=None, view_index=0):
+    """
+    Render a single 224x224 grayscale PNG image of a CAD model.
+
+    Args:
+        cad_file: Path to STEP file
+        save_path: Optional path to save the image. If None, returns image without saving.
+        view_index: Which isometric view to use (0-3)
+
+    Returns:
+        tuple: (cad_file, PIL.Image or save_path)
+    """
+    import os
+
+    isometric_views = [
+        (1, 1, 1),    # Front-right-top
+        (-1, -1, 1),  # Back-left-top
+        (-1, 1, -1),  # Front-left-bottom
+        (1, -1, -1)   # Back-right-bottom
+    ]
+
+    iso_type = isometric_views[view_index % len(isometric_views)]
+
+    # Render at 224x224 resolution
+    image = render_object(
+        cad_file,
+        draw_edges=True,
+        material='metal',
+        color=(191/256, 190/256, 186/256),  # Gray color
+        edge_color=(0.0, 0.0, 0.0),
+        realistic_camera=False,
+        ambient_only=False,
+        view='isometric',
+        relative_camera_distance="auto",
+        isometric_setup=iso_type,
+        ambient_light_strength=0.1,
+        light_strength=800.0,
+        light_size=10.0,
+        relative_light_distance=20.0,
+        light_color=(1.0, 1.0, 1.0),
+        resolution=(224, 224),  # Target resolution
+        random_distance_range="auto",
+        use_gpu=True,
+        num_samples=128,  # Lower samples for faster rendering at small resolution
+        albedo=False,
+        depth=False,
+    )
+
+    # Composite onto white background
+    white_bg = Image.new('RGB', image.size, (255, 255, 255))
+    if image.mode == 'RGBA':
+        white_bg.paste(image, (0, 0), image)
+    else:
+        white_bg.paste(image, (0, 0))
+
+    # Convert to grayscale
+    grayscale_img = white_bg.convert('L')
+
+    if save_path:
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        grayscale_img.save(save_path, 'PNG')
+        return cad_file, save_path
+
+    return cad_file, grayscale_img
+
+
 def multicolor_cad_image(cad_file, save_dir='dataset_results/images/multicolor_cad'):
     
     # If the save directory does not exist, create it
