@@ -2,6 +2,7 @@
 """
 Step 1: Convert CadQuery .py files to STEP files
 Can be run with regular Python (no Blender needed)
+Supports parallel processing and resume from interruption
 """
 
 import os
@@ -12,9 +13,25 @@ import json
 import subprocess
 from pathlib import Path
 from tqdm import tqdm
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
-def execute_cadquery_to_step(py_file, output_step):
-    """Execute CadQuery script to generate STEP file"""
+def process_single_file(args):
+    """Process a single CadQuery file - designed for parallel execution"""
+    idx, py_file, output_dir = args
+
+    sample_dir = os.path.join(output_dir, f"{idx:05d}")
+    step_path = os.path.join(sample_dir, 'model.step')
+
+    # Skip if already processed successfully
+    if os.path.exists(step_path) and os.path.getsize(step_path) > 0:
+        return idx, py_file.name, True, None, True  # Last True = skipped
+
+    os.makedirs(sample_dir, exist_ok=True)
+
+    # Copy code
+    shutil.copy2(py_file, os.path.join(sample_dir, 'code.py'))
+
+    # Execute conversion
     try:
         with open(py_file, 'r') as f:
             content = f.read()
@@ -27,10 +44,10 @@ def execute_cadquery_to_step(py_file, output_step):
                 break
 
         # Add export
-        script = content + f"\n\nimport cadquery as cq\ntry:\n    cq.exporters.export({result_var}, '{output_step}')\nexcept Exception as e:\n    print(f'Export error: {{e}}')\n"
+        script = content + f"\n\nimport cadquery as cq\ntry:\n    cq.exporters.export({result_var}, '{step_path}')\nexcept Exception as e:\n    print(f'Export error: {{e}}')\n"
 
         # Write temp script
-        temp_py = output_step.replace('.step', '_exec.py')
+        temp_py = step_path.replace('.step', '_exec.py')
         with open(temp_py, 'w') as f:
             f.write(script)
 
@@ -46,17 +63,24 @@ def execute_cadquery_to_step(py_file, output_step):
         if os.path.exists(temp_py):
             os.remove(temp_py)
 
-        success = result.returncode == 0 and os.path.exists(output_step)
-        return success, result.stderr if not success else None
+        success = result.returncode == 0 and os.path.exists(step_path)
+        error = result.stderr if not success else None
+        return idx, py_file.name, success, error, False
 
+    except subprocess.TimeoutExpired:
+        return idx, py_file.name, False, "Timeout (60s)", False
     except Exception as e:
-        return False, str(e)
+        return idx, py_file.name, False, str(e), False
 
 def main():
     parser = argparse.ArgumentParser(description='Convert CadQuery to STEP files')
     parser.add_argument('--input-dir', required=True)
     parser.add_argument('--output-dir', required=True)
     parser.add_argument('--max-samples', type=int)
+    parser.add_argument('--num-workers', type=int, default=1,
+                        help='Number of parallel workers (default: 1)')
+    parser.add_argument('--resume', action='store_true',
+                        help='Skip already processed files')
     args = parser.parse_args()
 
     print("="*70)
@@ -64,6 +88,8 @@ def main():
     print("="*70)
     print(f"Input:  {args.input_dir}")
     print(f"Output: {args.output_dir}")
+    print(f"Workers: {args.num_workers}")
+    print(f"Resume: {args.resume}")
     print("="*70)
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -75,32 +101,51 @@ def main():
 
     print(f"\nFound {len(py_files)} files\n")
 
+    # Prepare work items
+    work_items = [(idx, py_file, args.output_dir) for idx, py_file in enumerate(py_files)]
+
     successes = 0
     failures = 0
+    skipped = 0
     errors = []
 
-    for idx, py_file in enumerate(tqdm(py_files, desc="Converting")):
-        # Create sample dir
-        sample_dir = os.path.join(args.output_dir, f"{idx:05d}")
-        os.makedirs(sample_dir, exist_ok=True)
+    if args.num_workers == 1:
+        # Sequential processing
+        for item in tqdm(work_items, desc="Converting"):
+            idx, filename, success, error, was_skipped = process_single_file(item)
+            if was_skipped:
+                skipped += 1
+                successes += 1
+            elif success:
+                successes += 1
+            else:
+                failures += 1
+                errors.append({'id': idx, 'file': filename, 'error': error})
+    else:
+        # Parallel processing
+        with ProcessPoolExecutor(max_workers=args.num_workers) as executor:
+            futures = {executor.submit(process_single_file, item): item for item in work_items}
 
-        # Copy code
-        shutil.copy2(py_file, os.path.join(sample_dir, 'code.py'))
-
-        # Generate STEP
-        step_path = os.path.join(sample_dir, 'model.step')
-        success, error = execute_cadquery_to_step(str(py_file), step_path)
-
-        if success:
-            successes += 1
-        else:
-            failures += 1
-            errors.append({'id': idx, 'file': py_file.name, 'error': error})
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Converting"):
+                try:
+                    idx, filename, success, error, was_skipped = future.result()
+                    if was_skipped:
+                        skipped += 1
+                        successes += 1
+                    elif success:
+                        successes += 1
+                    else:
+                        failures += 1
+                        errors.append({'id': idx, 'file': filename, 'error': error})
+                except Exception as e:
+                    failures += 1
+                    errors.append({'id': -1, 'file': 'unknown', 'error': str(e)})
 
     # Save metadata
     metadata = {
         'total': len(py_files),
         'successful': successes,
+        'skipped': skipped,
         'failed': failures,
         'errors': errors[:50]
     }
@@ -109,7 +154,7 @@ def main():
         json.dump(metadata, f, indent=2)
 
     print(f"\n{'='*70}")
-    print(f"Total: {len(py_files)} | Success: {successes} | Failed: {failures}")
+    print(f"Total: {len(py_files)} | Success: {successes} | Skipped: {skipped} | Failed: {failures}")
     print(f"{'='*70}")
 
 if __name__ == "__main__":
